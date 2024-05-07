@@ -1266,8 +1266,9 @@ impl<'a> EncodingState<'a> {
 
         let table_type = TableType {
             element_type: RefType::FUNCREF,
-            minimum: signatures.len() as u32,
-            maximum: Some(signatures.len() as u32),
+            minimum: signatures.len() as u64,
+            maximum: Some(signatures.len() as u64),
+            table64: false,
         };
 
         tables.table(table_type);
@@ -2113,10 +2114,9 @@ impl ComponentEncoder {
         let bytes = state.component.finish();
 
         if self.validate {
-            let mut validator = Validator::new_with_features(WasmFeatures {
-                component_model: true,
-                ..Default::default()
-            });
+            let mut validator = Validator::new_with_features(
+                WasmFeatures::default() | WasmFeatures::COMPONENT_MODEL,
+            );
 
             validator
                 .validate_all(&bytes)

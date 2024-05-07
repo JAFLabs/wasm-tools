@@ -22,13 +22,14 @@
 // confusing it's recommended to read over that section to see how it maps to
 // the various methods here.
 
+use crate::prelude::*;
 use crate::{
     limits::MAX_WASM_FUNCTION_LOCALS, ArrayType, BinaryReaderError, BlockType, BrTable, Catch,
     CompositeType, FieldType, FuncType, HeapType, Ieee32, Ieee64, MemArg, RefType, Result,
-    StorageType, StructType, SubType, TryTable, UnpackedIndex, ValType, VisitOperator,
+    StorageType, StructType, SubType, TableType, TryTable, UnpackedIndex, ValType, VisitOperator,
     WasmFeatures, WasmModuleResources, V128,
 };
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 pub(crate) struct OperatorValidator {
     pub(super) locals: Locals,
@@ -154,15 +155,15 @@ enum MaybeType {
 // unit of storage, so assert that it doesn't exceed 4 bytes which is the
 // current expected size.
 const _: () = {
-    assert!(std::mem::size_of::<MaybeType>() == 4);
+    assert!(core::mem::size_of::<MaybeType>() == 4);
 };
 
-impl std::fmt::Display for MaybeType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for MaybeType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             MaybeType::Bot => write!(f, "bot"),
             MaybeType::HeapBot => write!(f, "heap-bot"),
-            MaybeType::Type(ty) => std::fmt::Display::fmt(ty, f),
+            MaybeType::Type(ty) => core::fmt::Display::fmt(ty, f),
         }
     }
 }
@@ -736,8 +737,19 @@ where
         Ok(index_ty)
     }
 
+    /// Validates that the `table` is valid and returns the type it points to.
+    fn check_table_index(&self, table: u32) -> Result<TableType> {
+        match self.resources.table_at(table) {
+            Some(ty) => Ok(ty),
+            None => bail!(
+                self.offset,
+                "unknown table {table}: table index out of bounds"
+            ),
+        }
+    }
+
     fn check_floats_enabled(&self) -> Result<()> {
-        if !self.features.floats {
+        if !self.features.contains(WasmFeatures::FLOATS) {
             bail!(self.offset, "floating-point instruction disallowed");
         }
         Ok(())
@@ -768,7 +780,7 @@ where
                 .resources
                 .check_value_type(t, &self.features, self.offset),
             BlockType::FuncType(idx) => {
-                if !self.features.multi_value {
+                if !self.features.contains(WasmFeatures::MULTI_VALUE) {
                     bail!(
                         self.offset,
                         "blocks, loops, and ifs may only produce a resulttype \
@@ -815,24 +827,18 @@ where
 
     /// Validates a call to an indirect function, very similar to `check_call`.
     fn check_call_indirect(&mut self, index: u32, table_index: u32) -> Result<()> {
-        match self.resources.table_at(table_index) {
-            None => {
-                bail!(self.offset, "unknown table: table index out of bounds");
-            }
-            Some(tab) => {
-                if !self
-                    .resources
-                    .is_subtype(ValType::Ref(tab.element_type), ValType::FUNCREF)
-                {
-                    bail!(
-                        self.offset,
-                        "indirect calls must go through a table with type <= funcref",
-                    );
-                }
-            }
+        let tab = self.check_table_index(table_index)?;
+        if !self
+            .resources
+            .is_subtype(ValType::Ref(tab.element_type), ValType::FUNCREF)
+        {
+            bail!(
+                self.offset,
+                "indirect calls must go through a table with type <= funcref",
+            );
         }
         let ty = self.func_type_at(index)?;
-        self.pop_operand(Some(ValType::I32))?;
+        self.pop_operand(Some(tab.index_type()))?;
         for ty in ty.clone().params().iter().rev() {
             self.pop_operand(Some(*ty))?;
         }
@@ -1064,6 +1070,24 @@ where
         self.push_operand(sub_ty)
     }
 
+    /// Common helper for checking the types of global types accessed
+    /// atomically.
+    fn check_atomic_global_ty(&self, global_index: u32) -> Result<()> {
+        let ty = self
+            .resources
+            .global_at(global_index)
+            .expect("existence should be checked prior to this point");
+        let ty = ty.content_type;
+        let supertype = RefType::ANYREF.into();
+        if !(ty == ValType::I32 || ty == ValType::I64 || self.resources.is_subtype(ty, supertype)) {
+            bail!(
+                    self.offset,
+                    "invalid type: `global.atomic.get` only allows `i32`, `i64` and subtypes of `anyref`"
+                );
+        }
+        Ok(())
+    }
+
     fn element_type_at(&self, elem_index: u32) -> Result<RefType> {
         match self.resources.element_type_at(elem_index) {
             Some(ty) => Ok(ty),
@@ -1207,12 +1231,13 @@ macro_rules! validate_proposal {
 
     (validate self mvp) => {};
     (validate $self:ident $proposal:ident) => {
-        $self.check_enabled($self.0.features.$proposal, validate_proposal!(desc $proposal))?
+        $self.check_enabled($self.0.features.contains(validate_proposal!(bitflags $proposal)), validate_proposal!(desc $proposal))?
     };
 
     (desc simd) => ("SIMD");
     (desc relaxed_simd) => ("relaxed SIMD");
     (desc threads) => ("threads");
+    (desc shared_everything_threads) => ("shared-everything-threads");
     (desc saturating_float_to_int) => ("saturating float to int conversions");
     (desc reference_types) => ("reference types");
     (desc bulk_memory) => ("bulk memory");
@@ -1222,6 +1247,20 @@ macro_rules! validate_proposal {
     (desc function_references) => ("function references");
     (desc memory_control) => ("memory control");
     (desc gc) => ("gc");
+
+    (bitflags sign_extension) => (WasmFeatures::SIGN_EXTENSION);
+    (bitflags saturating_float_to_int) => (WasmFeatures::SATURATING_FLOAT_TO_INT);
+    (bitflags bulk_memory) => (WasmFeatures::BULK_MEMORY);
+    (bitflags simd) => (WasmFeatures::SIMD);
+    (bitflags relaxed_simd) => (WasmFeatures::RELAXED_SIMD);
+    (bitflags exceptions) => (WasmFeatures::EXCEPTIONS);
+    (bitflags tail_call) => (WasmFeatures::TAIL_CALL);
+    (bitflags reference_types) => (WasmFeatures::REFERENCE_TYPES);
+    (bitflags function_references) => (WasmFeatures::FUNCTION_REFERENCES);
+    (bitflags threads) => (WasmFeatures::THREADS);
+    (bitflags shared_everything_threads) => (WasmFeatures::SHARED_EVERYTHING_THREADS);
+    (bitflags gc) => (WasmFeatures::GC);
+    (bitflags memory_control) => (WasmFeatures::MEMORY_CONTROL);
 }
 
 impl<'a, T> VisitOperator<'a> for WasmProposalValidator<'_, '_, T>
@@ -1509,7 +1548,7 @@ where
         table_index: u32,
         table_byte: u8,
     ) -> Self::Output {
-        if table_byte != 0 && !self.features.reference_types {
+        if table_byte != 0 && !self.features.contains(WasmFeatures::REFERENCE_TYPES) {
             bail!(
                 self.offset,
                 "reference-types not enabled: zero byte expected"
@@ -1593,13 +1632,13 @@ where
     }
     fn visit_local_tee(&mut self, local_index: u32) -> Self::Output {
         let expected_ty = self.local(local_index)?;
-        let actual_ty = self.pop_operand(Some(expected_ty))?;
+        self.pop_operand(Some(expected_ty))?;
         if !self.local_inits[local_index as usize] {
             self.local_inits[local_index as usize] = true;
             self.inits.push(local_index);
         }
 
-        self.push_operand(actual_ty)?;
+        self.push_operand(expected_ty)?;
         Ok(())
     }
     fn visit_global_get(&mut self, global_index: u32) -> Self::Output {
@@ -1610,6 +1649,17 @@ where
         } else {
             bail!(self.offset, "unknown global: global index out of bounds");
         };
+        Ok(())
+    }
+    fn visit_global_atomic_get(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        self.visit_global_get(global_index)?;
+        // No validation of `ordering` is needed because `global.atomic.get` can
+        // be used on both shared and unshared globals.
+        self.check_atomic_global_ty(global_index)?;
         Ok(())
     }
     fn visit_global_set(&mut self, global_index: u32) -> Self::Output {
@@ -1624,6 +1674,17 @@ where
         } else {
             bail!(self.offset, "unknown global: global index out of bounds");
         };
+        Ok(())
+    }
+    fn visit_global_atomic_set(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        self.visit_global_set(global_index)?;
+        // No validation of `ordering` is needed because `global.atomic.get` can
+        // be used on both shared and unshared globals.
+        self.check_atomic_global_ty(global_index)?;
         Ok(())
     }
     fn visit_i32_load(&mut self, memarg: MemArg) -> Self::Output {
@@ -1754,7 +1815,7 @@ where
         Ok(())
     }
     fn visit_memory_size(&mut self, mem: u32, mem_byte: u8) -> Self::Output {
-        if mem_byte != 0 && !self.features.multi_memory {
+        if mem_byte != 0 && !self.features.contains(WasmFeatures::MULTI_MEMORY) {
             bail!(self.offset, "multi-memory not enabled: zero byte expected");
         }
         let index_ty = self.check_memory_index(mem)?;
@@ -1762,7 +1823,7 @@ where
         Ok(())
     }
     fn visit_memory_grow(&mut self, mem: u32, mem_byte: u8) -> Self::Output {
-        if mem_byte != 0 && !self.features.multi_memory {
+        if mem_byte != 0 && !self.features.contains(WasmFeatures::MULTI_MEMORY) {
             bail!(self.offset, "multi-memory not enabled: zero byte expected");
         }
         let index_ty = self.check_memory_index(mem)?;
@@ -3446,15 +3507,7 @@ where
         Ok(())
     }
     fn visit_table_init(&mut self, segment: u32, table: u32) -> Self::Output {
-        if table > 0 {}
-        let table = match self.resources.table_at(table) {
-            Some(table) => table,
-            None => bail!(
-                self.offset,
-                "unknown table {}: table index out of bounds",
-                table
-            ),
-        };
+        let table = self.check_table_index(table)?;
         let segment_ty = self.element_type_at(segment)?;
         if !self
             .resources
@@ -3464,7 +3517,7 @@ where
         }
         self.pop_operand(Some(ValType::I32))?;
         self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ValType::I32))?;
+        self.pop_operand(Some(table.index_type()))?;
         Ok(())
     }
     fn visit_elem_drop(&mut self, segment: u32) -> Self::Output {
@@ -3478,73 +3531,61 @@ where
         Ok(())
     }
     fn visit_table_copy(&mut self, dst_table: u32, src_table: u32) -> Self::Output {
-        if src_table > 0 || dst_table > 0 {}
-        let (src, dst) = match (
-            self.resources.table_at(src_table),
-            self.resources.table_at(dst_table),
-        ) {
-            (Some(a), Some(b)) => (a, b),
-            _ => bail!(self.offset, "table index out of bounds"),
-        };
+        let src = self.check_table_index(src_table)?;
+        let dst = self.check_table_index(dst_table)?;
         if !self.resources.is_subtype(
             ValType::Ref(src.element_type),
             ValType::Ref(dst.element_type),
         ) {
             bail!(self.offset, "type mismatch");
         }
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ValType::I32))?;
+
+        // The length operand here is the smaller of src/dst, which is
+        // i32 if one is i32
+        self.pop_operand(Some(match src.index_type() {
+            ValType::I32 => ValType::I32,
+            _ => dst.index_type(),
+        }))?;
+
+        // ... and the offset into each table is required to be
+        // whatever the indexing type is for that table
+        self.pop_operand(Some(src.index_type()))?;
+        self.pop_operand(Some(dst.index_type()))?;
         Ok(())
     }
     fn visit_table_get(&mut self, table: u32) -> Self::Output {
-        let ty = match self.resources.table_at(table) {
-            Some(ty) => ty.element_type,
-            None => bail!(self.offset, "table index out of bounds"),
-        };
-        let ty = ValType::Ref(ty);
-        debug_assert_type_indices_are_ids(ty);
-        self.pop_operand(Some(ValType::I32))?;
-        self.push_operand(ty)?;
+        let table = self.check_table_index(table)?;
+        debug_assert_type_indices_are_ids(table.element_type.into());
+        self.pop_operand(Some(table.index_type()))?;
+        self.push_operand(table.element_type)?;
         Ok(())
     }
     fn visit_table_set(&mut self, table: u32) -> Self::Output {
-        let ty = match self.resources.table_at(table) {
-            Some(ty) => ValType::Ref(ty.element_type),
-            None => bail!(self.offset, "table index out of bounds"),
-        };
-        debug_assert_type_indices_are_ids(ty);
-        self.pop_operand(Some(ty))?;
-        self.pop_operand(Some(ValType::I32))?;
+        let table = self.check_table_index(table)?;
+        debug_assert_type_indices_are_ids(table.element_type.into());
+        self.pop_operand(Some(table.element_type.into()))?;
+        self.pop_operand(Some(table.index_type()))?;
         Ok(())
     }
     fn visit_table_grow(&mut self, table: u32) -> Self::Output {
-        let ty = match self.resources.table_at(table) {
-            Some(ty) => ValType::Ref(ty.element_type),
-            None => bail!(self.offset, "table index out of bounds"),
-        };
-        debug_assert_type_indices_are_ids(ty);
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ty))?;
-        self.push_operand(ValType::I32)?;
+        let table = self.check_table_index(table)?;
+        debug_assert_type_indices_are_ids(table.element_type.into());
+        self.pop_operand(Some(table.index_type()))?;
+        self.pop_operand(Some(table.element_type.into()))?;
+        self.push_operand(table.index_type())?;
         Ok(())
     }
     fn visit_table_size(&mut self, table: u32) -> Self::Output {
-        if self.resources.table_at(table).is_none() {
-            bail!(self.offset, "table index out of bounds");
-        }
-        self.push_operand(ValType::I32)?;
+        let table = self.check_table_index(table)?;
+        self.push_operand(table.index_type())?;
         Ok(())
     }
     fn visit_table_fill(&mut self, table: u32) -> Self::Output {
-        let ty = match self.resources.table_at(table) {
-            Some(ty) => ValType::Ref(ty.element_type),
-            None => bail!(self.offset, "table index out of bounds"),
-        };
-        debug_assert_type_indices_are_ids(ty);
-        self.pop_operand(Some(ValType::I32))?;
-        self.pop_operand(Some(ty))?;
-        self.pop_operand(Some(ValType::I32))?;
+        let table = self.check_table_index(table)?;
+        debug_assert_type_indices_are_ids(table.element_type.into());
+        self.pop_operand(Some(table.index_type()))?;
+        self.pop_operand(Some(table.element_type.into()))?;
+        self.pop_operand(Some(table.index_type()))?;
         Ok(())
     }
     fn visit_struct_new(&mut self, struct_type_index: u32) -> Self::Output {
@@ -4018,8 +4059,8 @@ where
     }
 }
 
-trait PreciseIterator: ExactSizeIterator + DoubleEndedIterator + Clone + std::fmt::Debug {}
-impl<T: ExactSizeIterator + DoubleEndedIterator + Clone + std::fmt::Debug> PreciseIterator for T {}
+trait PreciseIterator: ExactSizeIterator + DoubleEndedIterator + Clone + core::fmt::Debug {}
+impl<T: ExactSizeIterator + DoubleEndedIterator + Clone + core::fmt::Debug> PreciseIterator for T {}
 
 impl Locals {
     /// Defines another group of `count` local variables of type `ty`.

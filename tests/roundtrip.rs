@@ -576,84 +576,53 @@ impl TestState {
     }
 
     fn wasmparser_validator_for(&self, test: &Path) -> Validator {
-        let mut features = WasmFeatures {
-            threads: true,
-            shared_everything_threads: false,
-            reference_types: true,
-            simd: true,
-            relaxed_simd: true,
-            exceptions: true,
-            bulk_memory: true,
-            tail_call: true,
-            component_model: false,
-            floats: true,
-            multi_value: true,
-            multi_memory: true,
-            memory64: true,
-            extended_const: true,
-            saturating_float_to_int: true,
-            sign_extension: true,
-            mutable_global: true,
-            function_references: true,
-            memory_control: true,
-            gc: true,
-            component_model_values: true,
-            component_model_nested_names: false,
-        };
+        let mut features = WasmFeatures::all()
+            & !WasmFeatures::SHARED_EVERYTHING_THREADS
+            & !WasmFeatures::COMPONENT_MODEL
+            & !WasmFeatures::COMPONENT_MODEL_NESTED_NAMES;
         for part in test.iter().filter_map(|t| t.to_str()) {
             match part {
                 "testsuite" => {
                     features = WasmFeatures::default();
-                    features.component_model = false;
+                    features.remove(WasmFeatures::COMPONENT_MODEL);
 
                     // NB: when these proposals are merged upstream in the spec
                     // repo then this should be removed. Currently this hasn't
                     // happened so this is required to get tests passing for
                     // when these proposals are enabled by default.
-                    features.multi_memory = false;
-                    features.threads = false;
+                    features.remove(WasmFeatures::MULTI_MEMORY);
+                    features.remove(WasmFeatures::THREADS);
                 }
                 "missing-features" => {
-                    features = WasmFeatures::default();
-                    features.simd = false;
-                    features.reference_types = false;
-                    features.multi_value = false;
-                    features.sign_extension = false;
-                    features.saturating_float_to_int = false;
-                    features.mutable_global = false;
-                    features.bulk_memory = false;
-                    features.function_references = false;
-                    features.gc = false;
-                    features.component_model = false;
-                    features.component_model_values = false;
-                    features.shared_everything_threads = false;
+                    features = WasmFeatures::empty() | WasmFeatures::FLOATS;
                 }
-                "floats-disabled.wast" => features.floats = false,
+                "floats-disabled.wast" => features.remove(WasmFeatures::FLOATS),
                 "threads" => {
-                    features.threads = true;
-                    features.bulk_memory = false;
-                    features.reference_types = false;
+                    features.insert(WasmFeatures::THREADS);
+                    features.remove(WasmFeatures::BULK_MEMORY);
+                    features.remove(WasmFeatures::REFERENCE_TYPES);
                 }
-                "simd" => features.simd = true,
-                "exception-handling" => features.exceptions = true,
-                "tail-call" => features.tail_call = true,
-                "memory64" => features.memory64 = true,
-                "component-model" => features.component_model = true,
+                "simd" => features.insert(WasmFeatures::SIMD),
+                "exception-handling" => features.insert(WasmFeatures::EXCEPTIONS),
+                "tail-call" => features.insert(WasmFeatures::TAIL_CALL),
+                "memory64" => features.insert(WasmFeatures::MEMORY64),
+                "component-model" => features.insert(WasmFeatures::COMPONENT_MODEL),
                 "shared-everything-threads" => {
-                    features.component_model = true;
-                    features.shared_everything_threads = true;
+                    features.insert(WasmFeatures::COMPONENT_MODEL);
+                    features.insert(WasmFeatures::SHARED_EVERYTHING_THREADS);
                 }
-                "multi-memory" => features.multi_memory = true,
-                "extended-const" => features.extended_const = true,
-                "function-references" => features.function_references = true,
-                "relaxed-simd" => features.relaxed_simd = true,
-                "reference-types" => features.reference_types = true,
+                "multi-memory" => features.insert(WasmFeatures::MULTI_MEMORY),
+                "extended-const" => features.insert(WasmFeatures::EXTENDED_CONST),
+                "function-references" => features.insert(WasmFeatures::FUNCTION_REFERENCES),
+                "relaxed-simd" => features.insert(WasmFeatures::RELAXED_SIMD),
+                "reference-types" => features.insert(WasmFeatures::REFERENCE_TYPES),
                 "gc" => {
-                    features.function_references = true;
-                    features.gc = true;
+                    features.insert(WasmFeatures::FUNCTION_REFERENCES);
+                    features.insert(WasmFeatures::GC);
                 }
+                "custom-page-sizes" => features.insert(WasmFeatures::CUSTOM_PAGE_SIZES),
                 "import-extended.wast" => {
-                    features.component_model_nested_names = true;
+                    features.insert(WasmFeatures::COMPONENT_MODEL_NESTED_NAMES);
                 }
                 _ => {}
             }
@@ -682,6 +651,7 @@ fn error_matches(error: &str, message: &str) -> bool {
         || message == "malformed annotation id"
         || message == "alignment must be a power of two"
         || message == "i32 constant out of range"
+        || message == "constant expression required"
     {
         return error.contains("expected ")
             || error.contains("constant out of range")
@@ -764,7 +734,9 @@ fn error_matches(error: &str, message: &str) -> bool {
             || error.contains("invalid var_u32: integer representation too long")
             || error.contains("malformed section id")
             // FIXME(WebAssembly/memory64#45)
-            || error.contains("trailing bytes at end of section");
+            || error.contains("trailing bytes at end of section")
+            // It's tests... again... waiting for memory64 to get merged.
+            || error.contains("memory64 must be enabled for 64-bit tables");
     }
 
     // wasmparser blames a truncated file here, the spec interpreter blames the
@@ -791,7 +763,10 @@ fn error_matches(error: &str, message: &str) -> bool {
 
     if message == "malformed limits flags" {
         return error.contains("invalid memory limits flags")
-            || error.contains("invalid table resizable limits flags");
+            || error.contains("invalid table resizable limits flags")
+            // These tests need to be updated for the new limits flags in the
+            // custom-page-sizes-proposal.
+            || error.contains("unexpected end-of-file");
     }
 
     if message == "zero flag expected" {
@@ -851,6 +826,10 @@ fn error_matches(error: &str, message: &str) -> bool {
         // validation error instead.
         return error.contains("malformed global flags")
             || error.contains("require the shared-everything-threads proposal");
+    }
+
+    if message == "table size must be at most 2^32-1" {
+        return error.contains("invalid u32 number: constant out of range");
     }
 
     return false;

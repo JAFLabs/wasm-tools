@@ -468,8 +468,9 @@ fn make_env_module<'a>(
                 nullable: true,
                 heap_type: HeapType::Func,
             },
-            minimum: table_offset,
+            minimum: table_offset.into(),
             maximum: None,
+            table64: false,
         });
         exports.export("__indirect_function_table", ExportKind::Table, 0);
         module.section(&tables);
@@ -482,6 +483,7 @@ fn make_env_module<'a>(
             maximum: None,
             memory64: false,
             shared: false,
+            page_size_log2: None,
         });
         exports.export("memory", ExportKind::Memory, 0);
         module.section(&memories);
@@ -550,6 +552,7 @@ fn make_init_module(
             maximum: None,
             memory64: false,
             shared: false,
+            page_size_log2: None,
         },
     );
     imports.import(
@@ -562,6 +565,7 @@ fn make_init_module(
             },
             minimum: 0,
             maximum: None,
+            table64: false,
         },
     );
 

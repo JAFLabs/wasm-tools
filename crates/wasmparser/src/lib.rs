@@ -27,6 +27,31 @@
 //! the examples documented for [`Parser::parse`] or [`Parser::parse_all`].
 
 #![deny(missing_docs)]
+#![no_std]
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
+extern crate alloc;
+#[cfg(feature = "std")]
+#[macro_use]
+extern crate std;
+
+/// A small "prelude" to use throughout this crate.
+///
+/// This crate is tagged with `#![no_std]` meaning that we get libcore's prelude
+/// by default. This crate also uses `alloc`, however, and common types there
+/// like `String`. This custom prelude helps bring those types into scope to
+/// avoid having to import each of them manually.
+mod prelude {
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::format;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+
+    #[cfg(feature = "validate")]
+    pub use crate::map::{HashMap, HashSet, IndexMap, IndexSet};
+}
 
 /// A helper macro to conveniently iterate over all opcodes recognized by this
 /// crate. This can be used to work with either the [`Operator`] enumeration or
@@ -468,6 +493,12 @@ macro_rules! for_each_operator {
             @threads I64AtomicRmw16CmpxchgU { memarg: $crate::MemArg } => visit_i64_atomic_rmw16_cmpxchg_u
             @threads I64AtomicRmw32CmpxchgU { memarg: $crate::MemArg } => visit_i64_atomic_rmw32_cmpxchg_u
 
+            // Also 0xFE prefixed operators
+            // shared-everything threads
+            // https://github.com/WebAssembly/shared-everything-threads
+            @shared_everything_threads GlobalAtomicGet { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_get
+            @shared_everything_threads GlobalAtomicSet { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_set
+
             // 0xFD operators
             // 128-bit SIMD
             // - https://github.com/webassembly/simd
@@ -755,12 +786,20 @@ macro_rules! bail {
 pub use crate::binary_reader::{BinaryReader, BinaryReaderError, Result};
 pub use crate::parser::*;
 pub use crate::readers::*;
-pub use crate::resources::*;
-pub use crate::validator::*;
 
 mod binary_reader;
 mod limits;
 mod parser;
 mod readers;
+
+#[cfg(feature = "validate")]
 mod resources;
+#[cfg(feature = "validate")]
 mod validator;
+#[cfg(feature = "validate")]
+pub use crate::resources::*;
+#[cfg(feature = "validate")]
+pub use crate::validator::*;
+
+#[cfg(feature = "validate")]
+pub mod map;

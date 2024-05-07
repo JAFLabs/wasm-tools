@@ -17,12 +17,16 @@ use crate::limits::{
     MAX_WASM_FUNCTION_PARAMS, MAX_WASM_FUNCTION_RETURNS, MAX_WASM_STRUCT_FIELDS,
     MAX_WASM_SUPERTYPES, MAX_WASM_TYPES,
 };
+use crate::prelude::*;
+#[cfg(feature = "validate")]
 use crate::types::CoreTypeId;
 use crate::{BinaryReader, BinaryReaderError, FromReader, Result, SectionLimited};
-use std::fmt::{self, Debug, Write};
-use std::hash::{Hash, Hasher};
+use core::fmt::{self, Debug};
+use core::hash::{Hash, Hasher};
 
+#[cfg(feature = "validate")]
 mod matches;
+#[cfg(feature = "validate")]
 pub(crate) use self::matches::{Matches, WithRecGroup};
 
 /// A packed representation of a type index.
@@ -82,6 +86,7 @@ impl PackedIndex {
 
     const MODULE_KIND: u32 = 0b00 << 20;
     const REC_GROUP_KIND: u32 = 0b01 << 20;
+    #[cfg(feature = "validate")]
     const ID_KIND: u32 = 0b10 << 20;
 
     #[inline]
@@ -135,6 +140,7 @@ impl PackedIndex {
 
     /// Construct a `PackedIndex` from the given `CoreTypeId`.
     #[inline]
+    #[cfg(feature = "validate")]
     pub fn from_id(id: CoreTypeId) -> Option<Self> {
         let index = u32::try_from(crate::types::TypeIdentifier::index(&id)).unwrap();
         if PackedIndex::can_represent_index(index) {
@@ -146,6 +152,7 @@ impl PackedIndex {
 
     /// Is this index in canonical form?
     #[inline]
+    #[cfg(feature = "validate")]
     pub fn is_canonical(&self) -> bool {
         match self.kind() {
             Self::REC_GROUP_KIND | Self::ID_KIND => true,
@@ -161,6 +168,7 @@ impl PackedIndex {
         match self.kind() {
             Self::MODULE_KIND => UnpackedIndex::Module(self.index()),
             Self::REC_GROUP_KIND => UnpackedIndex::RecGroup(self.index()),
+            #[cfg(feature = "validate")]
             Self::ID_KIND => UnpackedIndex::Id(
                 <CoreTypeId as crate::types::TypeIdentifier>::from_index(self.index()),
             ),
@@ -190,6 +198,7 @@ impl PackedIndex {
 
     /// Get the underlying `CoreTypeId`, if any.
     #[inline]
+    #[cfg(feature = "validate")]
     pub fn as_core_type_id(&self) -> Option<CoreTypeId> {
         if self.kind() == Self::ID_KIND {
             Some(<CoreTypeId as crate::types::TypeIdentifier>::from_index(
@@ -201,14 +210,15 @@ impl PackedIndex {
     }
 }
 
-impl std::fmt::Debug for PackedIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PackedIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CoreTypeIndex")
             .field(
                 "kind",
                 match self.kind() {
                     Self::MODULE_KIND => &"module",
                     Self::REC_GROUP_KIND => &"recgroup",
+                    #[cfg(feature = "validate")]
                     Self::ID_KIND => &"id",
                     _ => unreachable!(),
                 },
@@ -218,9 +228,9 @@ impl std::fmt::Debug for PackedIndex {
     }
 }
 
-impl std::fmt::Display for PackedIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.unpack(), f)
+impl fmt::Display for PackedIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
+        fmt::Display::fmt(&self.unpack(), f)
     }
 }
 
@@ -236,6 +246,7 @@ pub enum UnpackedIndex {
     RecGroup(u32),
 
     /// A type identifier.
+    #[cfg(feature = "validate")]
     Id(CoreTypeId),
 }
 
@@ -247,12 +258,14 @@ impl UnpackedIndex {
         match self {
             UnpackedIndex::Module(i) => PackedIndex::from_module_index(*i),
             UnpackedIndex::RecGroup(i) => PackedIndex::from_rec_group_index(*i),
+            #[cfg(feature = "validate")]
             UnpackedIndex::Id(id) => PackedIndex::from_id(*id),
         }
     }
 
     /// Is this index in canonical form?
     #[inline]
+    #[cfg(feature = "validate")]
     pub fn is_canonical(&self) -> bool {
         matches!(self, UnpackedIndex::RecGroup(_) | UnpackedIndex::Id(_))
     }
@@ -279,6 +292,7 @@ impl UnpackedIndex {
 
     /// Get the underlying `CoreTypeId`, if any.
     #[inline]
+    #[cfg(feature = "validate")]
     pub fn as_core_type_id(&self) -> Option<CoreTypeId> {
         if let Self::Id(id) = *self {
             Some(id)
@@ -288,11 +302,12 @@ impl UnpackedIndex {
     }
 }
 
-impl std::fmt::Display for UnpackedIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for UnpackedIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             UnpackedIndex::Module(i) => write!(f, "(module {i})"),
             UnpackedIndex::RecGroup(i) => write!(f, "(recgroup {i})"),
+            #[cfg(feature = "validate")]
             UnpackedIndex::Id(id) => write!(f, "(id {})", crate::types::TypeIdentifier::index(id)),
         }
     }
@@ -334,7 +349,7 @@ impl RecGroup {
     /// Returns the list of subtypes in the recursive type group.
     pub fn types(&self) -> impl ExactSizeIterator<Item = &SubType> + '_ {
         let types = match &self.inner {
-            RecGroupInner::Implicit(ty) => std::slice::from_ref(ty),
+            RecGroupInner::Implicit(ty) => core::slice::from_ref(ty),
             RecGroupInner::Explicit(types) => types,
         };
         types.iter().map(|(_, ty)| ty)
@@ -342,9 +357,10 @@ impl RecGroup {
 
     /// Return a mutable borrow of the list of subtypes in this
     /// recursive type group.
+    #[cfg(feature = "validate")]
     pub(crate) fn types_mut(&mut self) -> impl ExactSizeIterator<Item = &mut SubType> + '_ {
         let types = match &mut self.inner {
-            RecGroupInner::Implicit(ty) => std::slice::from_mut(ty),
+            RecGroupInner::Implicit(ty) => core::slice::from_mut(ty),
             RecGroupInner::Explicit(types) => types,
         };
         types.iter_mut().map(|(_, ty)| ty)
@@ -366,7 +382,7 @@ impl RecGroup {
 
         enum Iter {
             Implicit(Option<(usize, SubType)>),
-            Explicit(std::vec::IntoIter<(usize, SubType)>),
+            Explicit(alloc::vec::IntoIter<(usize, SubType)>),
         }
 
         impl Iterator for Iter {
@@ -423,10 +439,10 @@ pub struct SubType {
     pub composite_type: CompositeType,
 }
 
-impl std::fmt::Display for SubType {
+impl fmt::Display for SubType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_final && self.supertype_idx.is_none() {
-            std::fmt::Display::fmt(&self.composite_type, f)
+            fmt::Display::fmt(&self.composite_type, f)
         } else {
             write!(f, "(sub ")?;
             if self.is_final {
@@ -435,7 +451,7 @@ impl std::fmt::Display for SubType {
             if let Some(idx) = self.supertype_idx {
                 write!(f, "{idx} ")?;
             }
-            std::fmt::Display::fmt(&self.composite_type, f)?;
+            fmt::Display::fmt(&self.composite_type, f)?;
             write!(f, ")")
         }
     }
@@ -464,6 +480,7 @@ impl SubType {
     }
 
     /// Maps any `UnpackedIndex` via the specified closure.
+    #[cfg(feature = "validate")]
     pub(crate) fn remap_indices(
         &mut self,
         f: &mut dyn FnMut(&mut PackedIndex) -> Result<()>,
@@ -504,7 +521,7 @@ pub enum CompositeType {
     Struct(StructType),
 }
 
-impl std::fmt::Display for CompositeType {
+impl fmt::Display for CompositeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Array(_) => write!(f, "(array ...)"),
@@ -549,8 +566,8 @@ pub struct FuncType {
     len_params: usize,
 }
 
-impl std::fmt::Debug for FuncType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for FuncType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FuncType")
             .field("params", &self.params())
             .field("results", &self.results())
@@ -596,6 +613,7 @@ impl FuncType {
     /// Returns an exclusive slice to the parameter types of the
     /// [`FuncType`].
     #[inline]
+    #[cfg(feature = "validate")]
     pub(crate) fn params_mut(&mut self) -> &mut [ValType] {
         &mut self.params_results[..self.len_params]
     }
@@ -609,11 +627,15 @@ impl FuncType {
     /// Returns an exclusive slice to the result types of the
     /// [`FuncType`].
     #[inline]
+    #[cfg(feature = "validate")]
     pub(crate) fn results_mut(&mut self) -> &mut [ValType] {
         &mut self.params_results[self.len_params..]
     }
 
+    #[cfg(feature = "validate")]
     pub(crate) fn desc(&self) -> String {
+        use core::fmt::Write;
+
         let mut s = String::new();
         s.push_str("[");
         for (i, param) in self.params().iter().enumerate() {
@@ -649,6 +671,7 @@ pub struct FieldType {
 
 impl FieldType {
     /// Maps any `UnpackedIndex` via the specified closure.
+    #[cfg(feature = "validate")]
     pub(crate) fn remap_indices(
         &mut self,
         f: &mut dyn FnMut(&mut PackedIndex) -> Result<()>,
@@ -671,12 +694,12 @@ pub enum StorageType {
     Val(ValType),
 }
 
-impl std::fmt::Display for StorageType {
+impl fmt::Display for StorageType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::I8 => write!(f, "i8"),
             Self::I16 => write!(f, "i16"),
-            Self::Val(v) => std::fmt::Display::fmt(v, f),
+            Self::Val(v) => fmt::Display::fmt(v, f),
         }
     }
 }
@@ -732,15 +755,15 @@ impl From<RefType> for ValType {
     }
 }
 
-impl std::fmt::Display for ValType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ValType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ValType::I32 => f.write_str("i32"),
             ValType::I64 => f.write_str("i64"),
             ValType::F32 => f.write_str("f32"),
             ValType::F64 => f.write_str("f64"),
             ValType::V128 => f.write_str("v128"),
-            ValType::Ref(r) => std::fmt::Display::fmt(r, f),
+            ValType::Ref(r) => fmt::Display::fmt(r, f),
         }
     }
 }
@@ -780,7 +803,17 @@ impl ValType {
         }
     }
 
+    /// Whether the type is `shared`.
+    pub fn is_shared(&self) -> bool {
+        match *self {
+            Self::I32 | Self::I64 | Self::F32 | Self::F64 | Self::V128 => true,
+            // TODO: parsing of `shared` refs is not yet implemented.
+            Self::Ref(_) => false,
+        }
+    }
+
     /// Maps any `UnpackedIndex` via the specified closure.
+    #[cfg(feature = "validate")]
     pub(crate) fn remap_indices(
         &mut self,
         map: &mut dyn FnMut(&mut PackedIndex) -> Result<()>,
@@ -853,8 +886,8 @@ impl ValType {
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct RefType([u8; 3]);
 
-impl std::fmt::Debug for RefType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for RefType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.is_nullable(), self.heap_type()) {
             (true, HeapType::Any) => write!(f, "anyref"),
             (false, HeapType::Any) => write!(f, "(ref any)"),
@@ -886,9 +919,9 @@ impl std::fmt::Debug for RefType {
     }
 }
 
-impl std::fmt::Display for RefType {
+impl fmt::Display for RefType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        std::fmt::Debug::fmt(self, f)
+        fmt::Debug::fmt(self, f)
     }
 }
 
@@ -1076,9 +1109,8 @@ impl RefType {
 
     /// Create a new `RefType`.
     ///
-    /// Returns `None` when the heap type's type index (if any) is
-    /// beyond this crate's implementation limits and therfore is not
-    /// representable.
+    /// Returns `None` when the heap type's type index (if any) is beyond this
+    /// crate's implementation limits and therefore is not representable.
     pub fn new(nullable: bool, heap_type: HeapType) -> Option<Self> {
         let nullable32 = Self::NULLABLE_BIT * (nullable as u32);
         match heap_type {
@@ -1199,6 +1231,7 @@ impl RefType {
 
     // Note that this is similar to `Display for RefType` except that it has
     // the indexes stubbed out.
+    #[cfg(feature = "validate")]
     pub(crate) fn wat(&self) -> &'static str {
         match (self.is_nullable(), self.heap_type()) {
             (true, HeapType::Func) => "funcref",
@@ -1478,10 +1511,31 @@ impl<'a> FromReader<'a> for HeapType {
 pub struct TableType {
     /// The table's element type.
     pub element_type: RefType,
+    /// Whether or not this is a 64-bit table.
+    ///
+    /// This is part of the memory64 proposal in WebAssembly.
+    pub table64: bool,
     /// Initial size of this table, in elements.
-    pub initial: u32,
+    ///
+    /// For 32-bit tables (when `table64` is `false`) this is guaranteed to
+    /// be at most `u32::MAX` for valid types.
+    pub initial: u64,
     /// Optional maximum size of the table, in elements.
-    pub maximum: Option<u32>,
+    ///
+    /// For 32-bit tables (when `table64` is `false`) this is guaranteed to
+    /// be at most `u32::MAX` for valid types.
+    pub maximum: Option<u64>,
+}
+
+impl TableType {
+    /// Gets the index type for the table.
+    pub fn index_type(&self) -> ValType {
+        if self.table64 {
+            ValType::I64
+        } else {
+            ValType::I32
+        }
+    }
 }
 
 /// Represents a memory's type.
@@ -1512,6 +1566,16 @@ pub struct MemoryType {
     /// be at most `u32::MAX` for valid types. This field is always present for
     /// valid wasm memories when `shared` is `true`.
     pub maximum: Option<u64>,
+
+    /// The log base 2 of the memory's custom page size.
+    ///
+    /// Memory pages are, by default, 64KiB large (i.e. 2<sup>16</sup> or
+    /// `65536`).
+    ///
+    /// [The custom-page-sizes proposal] allows changing it to other values.
+    ///
+    /// [The custom-page-sizes proposal]: https://github.com/WebAssembly/custom-page-sizes
+    pub page_size_log2: Option<u32>,
 }
 
 impl MemoryType {
