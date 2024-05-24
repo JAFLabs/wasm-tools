@@ -22,13 +22,13 @@
 // confusing it's recommended to read over that section to see how it maps to
 // the various methods here.
 
-use crate::prelude::*;
 use crate::{
     limits::MAX_WASM_FUNCTION_LOCALS, ArrayType, BinaryReaderError, BlockType, BrTable, Catch,
     CompositeType, FieldType, FuncType, HeapType, Ieee32, Ieee64, MemArg, RefType, Result,
     StorageType, StructType, SubType, TableType, TryTable, UnpackedIndex, ValType, VisitOperator,
     WasmFeatures, WasmModuleResources, V128,
 };
+use crate::{prelude::*, GlobalType};
 use core::ops::{Deref, DerefMut};
 
 pub(crate) struct OperatorValidator {
@@ -729,7 +729,10 @@ where
     fn check_memarg(&self, memarg: MemArg) -> Result<ValType> {
         let index_ty = self.check_memory_index(memarg.memory)?;
         if memarg.align > memarg.max_align {
-            bail!(self.offset, "alignment must not be larger than natural");
+            bail!(
+                self.offset,
+                "malformed memop flags: alignment must not be larger than natural"
+            );
         }
         if index_ty == ValType::I32 && memarg.offset > u64::from(u32::MAX) {
             bail!(self.offset, "offset out of range: must be <= 2**32");
@@ -749,7 +752,7 @@ where
     }
 
     fn check_floats_enabled(&self) -> Result<()> {
-        if !self.features.contains(WasmFeatures::FLOATS) {
+        if !self.features.floats() {
             bail!(self.offset, "floating-point instruction disallowed");
         }
         Ok(())
@@ -780,7 +783,7 @@ where
                 .resources
                 .check_value_type(t, &self.features, self.offset),
             BlockType::FuncType(idx) => {
-                if !self.features.contains(WasmFeatures::MULTI_VALUE) {
+                if !self.features.multi_value() {
                     bail!(
                         self.offset,
                         "blocks, loops, and ifs may only produce a resulttype \
@@ -935,8 +938,8 @@ where
         Ok(())
     }
 
-    /// Checks the validity of a common atomic binary operator.
-    fn check_atomic_binary_op(&mut self, memarg: MemArg, op_ty: ValType) -> Result<()> {
+    /// Checks the validity of atomic binary operator on memory.
+    fn check_atomic_binary_memory_op(&mut self, memarg: MemArg, op_ty: ValType) -> Result<()> {
         let ty = self.check_shared_memarg(memarg)?;
         self.pop_operand(Some(op_ty))?;
         self.pop_operand(Some(ty))?;
@@ -944,8 +947,8 @@ where
         Ok(())
     }
 
-    /// Checks the validity of an atomic compare exchange operator.
-    fn check_atomic_binary_cmpxchg(&mut self, memarg: MemArg, op_ty: ValType) -> Result<()> {
+    /// Checks the validity of an atomic compare exchange operator on memories.
+    fn check_atomic_binary_memory_cmpxchg(&mut self, memarg: MemArg, op_ty: ValType) -> Result<()> {
         let ty = self.check_shared_memarg(memarg)?;
         self.pop_operand(Some(op_ty))?;
         self.pop_operand(Some(op_ty))?;
@@ -1070,22 +1073,17 @@ where
         self.push_operand(sub_ty)
     }
 
-    /// Common helper for checking the types of global types accessed
-    /// atomically.
-    fn check_atomic_global_ty(&self, global_index: u32) -> Result<()> {
-        let ty = self
-            .resources
-            .global_at(global_index)
-            .expect("existence should be checked prior to this point");
-        let ty = ty.content_type;
-        let supertype = RefType::ANYREF.into();
-        if !(ty == ValType::I32 || ty == ValType::I64 || self.resources.is_subtype(ty, supertype)) {
+    /// Common helper for checking the types of globals accessed with atomic RMW
+    /// instructions, which only allow `i32` and `i64`.
+    fn check_atomic_global_rmw_ty(&self, global_index: u32) -> Result<ValType> {
+        let ty = self.global_type_at(global_index)?.content_type;
+        if !(ty == ValType::I32 || ty == ValType::I64) {
             bail!(
-                    self.offset,
-                    "invalid type: `global.atomic.get` only allows `i32`, `i64` and subtypes of `anyref`"
-                );
+                self.offset,
+                "invalid type: `global.atomic.rmw.*` only allows `i32` and `i64`"
+            );
         }
-        Ok(())
+        Ok(ty)
     }
 
     fn element_type_at(&self, elem_index: u32) -> Result<RefType> {
@@ -1160,6 +1158,14 @@ where
             .ok_or_else(|| format_err!(self.offset, "unknown tag {}: tag index out of bounds", at))
     }
 
+    fn global_type_at(&self, at: u32) -> Result<GlobalType> {
+        if let Some(ty) = self.resources.global_at(at) {
+            Ok(ty)
+        } else {
+            bail!(self.offset, "unknown global: global index out of bounds");
+        }
+    }
+
     fn params(&self, ty: BlockType) -> Result<impl PreciseIterator<Item = ValType> + 'resources> {
         Ok(match ty {
             BlockType::Empty | BlockType::Type(_) => Either::B(None.into_iter()),
@@ -1231,7 +1237,7 @@ macro_rules! validate_proposal {
 
     (validate self mvp) => {};
     (validate $self:ident $proposal:ident) => {
-        $self.check_enabled($self.0.features.contains(validate_proposal!(bitflags $proposal)), validate_proposal!(desc $proposal))?
+        $self.check_enabled($self.0.features.$proposal(), validate_proposal!(desc $proposal))?
     };
 
     (desc simd) => ("SIMD");
@@ -1247,20 +1253,6 @@ macro_rules! validate_proposal {
     (desc function_references) => ("function references");
     (desc memory_control) => ("memory control");
     (desc gc) => ("gc");
-
-    (bitflags sign_extension) => (WasmFeatures::SIGN_EXTENSION);
-    (bitflags saturating_float_to_int) => (WasmFeatures::SATURATING_FLOAT_TO_INT);
-    (bitflags bulk_memory) => (WasmFeatures::BULK_MEMORY);
-    (bitflags simd) => (WasmFeatures::SIMD);
-    (bitflags relaxed_simd) => (WasmFeatures::RELAXED_SIMD);
-    (bitflags exceptions) => (WasmFeatures::EXCEPTIONS);
-    (bitflags tail_call) => (WasmFeatures::TAIL_CALL);
-    (bitflags reference_types) => (WasmFeatures::REFERENCE_TYPES);
-    (bitflags function_references) => (WasmFeatures::FUNCTION_REFERENCES);
-    (bitflags threads) => (WasmFeatures::THREADS);
-    (bitflags shared_everything_threads) => (WasmFeatures::SHARED_EVERYTHING_THREADS);
-    (bitflags gc) => (WasmFeatures::GC);
-    (bitflags memory_control) => (WasmFeatures::MEMORY_CONTROL);
 }
 
 impl<'a, T> VisitOperator<'a> for WasmProposalValidator<'_, '_, T>
@@ -1548,7 +1540,7 @@ where
         table_index: u32,
         table_byte: u8,
     ) -> Self::Output {
-        if table_byte != 0 && !self.features.contains(WasmFeatures::REFERENCE_TYPES) {
+        if table_byte != 0 && !self.features.reference_types() {
             bail!(
                 self.offset,
                 "reference-types not enabled: zero byte expected"
@@ -1642,13 +1634,9 @@ where
         Ok(())
     }
     fn visit_global_get(&mut self, global_index: u32) -> Self::Output {
-        if let Some(ty) = self.resources.global_at(global_index) {
-            let ty = ty.content_type;
-            debug_assert_type_indices_are_ids(ty);
-            self.push_operand(ty)?;
-        } else {
-            bail!(self.offset, "unknown global: global index out of bounds");
-        };
+        let ty = self.global_type_at(global_index)?.content_type;
+        debug_assert_type_indices_are_ids(ty);
+        self.push_operand(ty)?;
         Ok(())
     }
     fn visit_global_atomic_get(
@@ -1658,22 +1646,24 @@ where
     ) -> Self::Output {
         self.visit_global_get(global_index)?;
         // No validation of `ordering` is needed because `global.atomic.get` can
-        // be used on both shared and unshared globals.
-        self.check_atomic_global_ty(global_index)?;
+        // be used on both shared and unshared globals. But we do need to limit
+        // which types can be used with this instruction.
+        let ty = self.global_type_at(global_index)?.content_type;
+        let supertype = RefType::ANYREF.into();
+        if !(ty == ValType::I32 || ty == ValType::I64 || self.resources.is_subtype(ty, supertype)) {
+            bail!(self.offset, "invalid type: `global.atomic.get` only allows `i32`, `i64` and subtypes of `anyref`");
+        }
         Ok(())
     }
     fn visit_global_set(&mut self, global_index: u32) -> Self::Output {
-        if let Some(ty) = self.resources.global_at(global_index) {
-            if !ty.mutable {
-                bail!(
-                    self.offset,
-                    "global is immutable: cannot modify it with `global.set`"
-                );
-            }
-            self.pop_operand(Some(ty.content_type))?;
-        } else {
-            bail!(self.offset, "unknown global: global index out of bounds");
-        };
+        let ty = self.global_type_at(global_index)?;
+        if !ty.mutable {
+            bail!(
+                self.offset,
+                "global is immutable: cannot modify it with `global.set`"
+            );
+        }
+        self.pop_operand(Some(ty.content_type))?;
         Ok(())
     }
     fn visit_global_atomic_set(
@@ -1684,9 +1674,82 @@ where
         self.visit_global_set(global_index)?;
         // No validation of `ordering` is needed because `global.atomic.get` can
         // be used on both shared and unshared globals.
-        self.check_atomic_global_ty(global_index)?;
+        let ty = self.global_type_at(global_index)?.content_type;
+        let supertype = RefType::ANYREF.into();
+        if !(ty == ValType::I32 || ty == ValType::I64 || self.resources.is_subtype(ty, supertype)) {
+            bail!(self.offset, "invalid type: `global.atomic.set` only allows `i32`, `i64` and subtypes of `anyref`");
+        }
         Ok(())
     }
+    fn visit_global_atomic_rmw_add(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.check_atomic_global_rmw_ty(global_index)?;
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_sub(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.check_atomic_global_rmw_ty(global_index)?;
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_and(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.check_atomic_global_rmw_ty(global_index)?;
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_or(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.check_atomic_global_rmw_ty(global_index)?;
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_xor(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.check_atomic_global_rmw_ty(global_index)?;
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_xchg(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.global_type_at(global_index)?.content_type;
+        if !(ty == ValType::I32
+            || ty == ValType::I64
+            || self.resources.is_subtype(ty, RefType::ANYREF.into()))
+        {
+            bail!(self.offset, "invalid type: `global.atomic.rmw.xchg` only allows `i32`, `i64` and subtypes of `anyref`");
+        }
+        self.check_unary_op(ty)
+    }
+    fn visit_global_atomic_rmw_cmpxchg(
+        &mut self,
+        _ordering: crate::Ordering,
+        global_index: u32,
+    ) -> Self::Output {
+        let ty = self.global_type_at(global_index)?.content_type;
+        if !(ty == ValType::I32
+            || ty == ValType::I64
+            || self.resources.is_subtype(ty, RefType::EQREF.into()))
+        {
+            bail!(self.offset, "invalid type: `global.atomic.rmw.cmpxchg` only allows `i32`, `i64` and subtypes of `eqref`");
+        }
+        self.check_binary_op(ty)
+    }
+
     fn visit_i32_load(&mut self, memarg: MemArg) -> Self::Output {
         let ty = self.check_memarg(memarg)?;
         self.pop_operand(Some(ty))?;
@@ -1815,7 +1878,7 @@ where
         Ok(())
     }
     fn visit_memory_size(&mut self, mem: u32, mem_byte: u8) -> Self::Output {
-        if mem_byte != 0 && !self.features.contains(WasmFeatures::MULTI_MEMORY) {
+        if mem_byte != 0 && !self.features.multi_memory() {
             bail!(self.offset, "multi-memory not enabled: zero byte expected");
         }
         let index_ty = self.check_memory_index(mem)?;
@@ -1823,7 +1886,7 @@ where
         Ok(())
     }
     fn visit_memory_grow(&mut self, mem: u32, mem_byte: u8) -> Self::Output {
-        if mem_byte != 0 && !self.features.contains(WasmFeatures::MULTI_MEMORY) {
+        if mem_byte != 0 && !self.features.multi_memory() {
             bail!(self.offset, "multi-memory not enabled: zero byte expected");
         }
         let index_ty = self.check_memory_index(mem)?;
@@ -2304,154 +2367,154 @@ where
         self.check_atomic_store(memarg, ValType::I64)
     }
     fn visit_i32_atomic_rmw_add(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw_sub(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw_and(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw_or(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw_xor(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_add_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_sub_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_and_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_or_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_xor_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_add_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_sub_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_and_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_or_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_xor_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i64_atomic_rmw_add(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw_sub(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw_and(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw_or(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw_xor(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_add_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_sub_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_and_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_or_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_xor_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_add_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_sub_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_and_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_or_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_xor_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_add_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_sub_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_and_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_or_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_xor_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i32_atomic_rmw_xchg(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_xchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_xchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw_cmpxchg(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I32)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw16_cmpxchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I32)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I32)
     }
     fn visit_i32_atomic_rmw8_cmpxchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I32)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I32)
     }
     fn visit_i64_atomic_rmw_xchg(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_xchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_xchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_xchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I64)
+        self.check_atomic_binary_memory_op(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw_cmpxchg(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I64)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw32_cmpxchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I64)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw16_cmpxchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I64)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I64)
     }
     fn visit_i64_atomic_rmw8_cmpxchg_u(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_cmpxchg(memarg, ValType::I64)
+        self.check_atomic_binary_memory_cmpxchg(memarg, ValType::I64)
     }
     fn visit_memory_atomic_notify(&mut self, memarg: MemArg) -> Self::Output {
-        self.check_atomic_binary_op(memarg, ValType::I32)
+        self.check_atomic_binary_memory_op(memarg, ValType::I32)
     }
     fn visit_memory_atomic_wait32(&mut self, memarg: MemArg) -> Self::Output {
         let ty = self.check_shared_memarg(memarg)?;

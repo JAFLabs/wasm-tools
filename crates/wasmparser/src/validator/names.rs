@@ -4,6 +4,7 @@
 use crate::prelude::*;
 use crate::{Result, WasmFeatures};
 use core::borrow::Borrow;
+use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
@@ -101,6 +102,20 @@ impl PartialEq<KebabString> for KebabStr {
     }
 }
 
+impl Ord for KebabStr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_chars = self.chars().map(|c| c.to_ascii_lowercase());
+        let other_chars = other.chars().map(|c| c.to_ascii_lowercase());
+        self_chars.cmp(other_chars)
+    }
+}
+
+impl PartialOrd for KebabStr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Hash for KebabStr {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.len().hash(state);
@@ -175,6 +190,18 @@ impl Borrow<KebabStr> for KebabString {
     }
 }
 
+impl Ord for KebabString {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_kebab_str().cmp(other.as_kebab_str())
+    }
+}
+
+impl PartialOrd for KebabString {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.as_kebab_str().partial_cmp(other.as_kebab_str())
+    }
+}
+
 impl PartialEq for KebabString {
     fn eq(&self, other: &Self) -> bool {
         self.as_kebab_str().eq(other.as_kebab_str())
@@ -230,7 +257,7 @@ pub struct ComponentName {
     kind: ParsedComponentNameKind,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ParsedComponentNameKind {
     Label,
     Constructor,
@@ -347,6 +374,18 @@ impl PartialEq for ComponentName {
 
 impl Eq for ComponentName {}
 
+impl Ord for ComponentName {
+    fn cmp(&self, other: &ComponentName) -> Ordering {
+        self.kind().cmp(&other.kind())
+    }
+}
+
+impl PartialOrd for ComponentName {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.kind.partial_cmp(&other.kind)
+    }
+}
+
 impl fmt::Display for ComponentName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.raw.fmt(f)
@@ -356,6 +395,54 @@ impl fmt::Display for ComponentName {
 impl fmt::Debug for ComponentName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.raw.fmt(f)
+    }
+}
+
+impl ComponentNameKind<'_> {
+    /// Returns the [`ParsedComponentNameKind`] of the [`ComponentNameKind`].
+    fn kind(&self) -> ParsedComponentNameKind {
+        match self {
+            Self::Label(_) => ParsedComponentNameKind::Label,
+            Self::Constructor(_) => ParsedComponentNameKind::Constructor,
+            Self::Method(_) => ParsedComponentNameKind::Method,
+            Self::Static(_) => ParsedComponentNameKind::Static,
+            Self::Interface(_) => ParsedComponentNameKind::Interface,
+            Self::Dependency(_) => ParsedComponentNameKind::Dependency,
+            Self::Url(_) => ParsedComponentNameKind::Url,
+            Self::Hash(_) => ParsedComponentNameKind::Hash,
+        }
+    }
+}
+
+impl Ord for ComponentNameKind<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.kind().cmp(&other.kind()) {
+            Ordering::Equal => (),
+            unequal => return unequal,
+        }
+        match (self, other) {
+            (ComponentNameKind::Label(lhs), ComponentNameKind::Label(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Constructor(lhs), ComponentNameKind::Constructor(rhs)) => {
+                lhs.cmp(rhs)
+            }
+            (ComponentNameKind::Method(lhs), ComponentNameKind::Method(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Method(lhs), ComponentNameKind::Static(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Static(lhs), ComponentNameKind::Method(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Static(lhs), ComponentNameKind::Static(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Interface(lhs), ComponentNameKind::Interface(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Dependency(lhs), ComponentNameKind::Dependency(rhs)) => {
+                lhs.cmp(rhs)
+            }
+            (ComponentNameKind::Url(lhs), ComponentNameKind::Url(rhs)) => lhs.cmp(rhs),
+            (ComponentNameKind::Hash(lhs), ComponentNameKind::Hash(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("already compared for different kinds above"),
+        }
+    }
+}
+
+impl PartialOrd for ComponentNameKind<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -409,7 +496,7 @@ impl PartialEq for ComponentNameKind<'_> {
 impl Eq for ComponentNameKind<'_> {}
 
 /// A resource name and its function, stored as `a.b`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ResourceFunc<'a>(&'a str);
 
 impl<'a> ResourceFunc<'a> {
@@ -426,8 +513,8 @@ impl<'a> ResourceFunc<'a> {
 }
 
 /// An interface name, stored as `a:b/c@1.2.3`
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct InterfaceName<'a>(&'a str);
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct InterfaceName<'a>(pub &'a str);
 
 impl<'a> InterfaceName<'a> {
     /// Returns the entire underlying string.
@@ -471,19 +558,35 @@ impl<'a> InterfaceName<'a> {
 
 /// A dependency on an implementation either as `locked-dep=...` or
 /// `unlocked-dep=...`
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct DependencyName<'a>(&'a str);
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct DependencyName<'a>(pub &'a str);
 
 impl<'a> DependencyName<'a> {
     /// Returns entire underlying import string
     pub fn as_str(&self) -> &'a str {
         self.0
     }
+
+    /// Returns the `a:b` in `a:b:c/d/e`
+    pub fn namespace(&self) -> &'a KebabStr {
+        let colon = self.0.rfind(':').unwrap();
+        KebabStr::new_unchecked(&self.0[..colon])
+    }
+
+    /// Returns the `c` in `a:b:c/d/e`
+    pub fn package(&self) -> &'a KebabStr {
+        let colon = self.0.rfind(':').unwrap();
+        let slash = self.0.find('/').unwrap();
+        KebabStr::new_unchecked(&self.0[colon + 1..slash])
+    }
+
+    fn interface(&self) -> String {
+        "foo".to_string()
+    }
 }
 
-/// A dependency on an implementation either as `url=...` or
-/// `relative-url=...`
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+/// A dependency on an implementation either as `url=...`
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct UrlName<'a>(&'a str);
 
 impl<'a> UrlName<'a> {
@@ -494,7 +597,7 @@ impl<'a> UrlName<'a> {
 }
 
 /// A dependency on an implementation either as `integrity=...`.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct HashName<'a>(&'a str);
 
 impl<'a> HashName<'a> {
@@ -562,17 +665,6 @@ impl<'a> ComponentNameParser<'a> {
             self.eat_optional_hash()?;
             return Ok(ParsedComponentNameKind::Url);
         }
-        // 'relative-url=<' <nonbrackets> '>' (',' <hashname>)?
-        if self.eat_str("relative-url=") {
-            self.expect_str("<")?;
-            let url = self.take_up_to('>')?;
-            if url.contains('<') {
-                bail!(self.offset, "relative-url cannot contain `<`");
-            }
-            self.expect_str(">")?;
-            self.eat_optional_hash()?;
-            return Ok(ParsedComponentNameKind::Url);
-        }
 
         // 'integrity=<' <integrity-metadata> '>'
         if self.eat_str("integrity=") {
@@ -632,10 +724,7 @@ impl<'a> ComponentNameParser<'a> {
         self.expect_str(":")?;
         self.take_lowercase_kebab()?;
 
-        if self
-            .features
-            .contains(WasmFeatures::COMPONENT_MODEL_NESTED_NAMES)
-        {
+        if self.features.component_model_nested_names() {
             // Take the remaining package namespaces and name
             while self.next.starts_with(':') {
                 self.expect_str(":")?;
@@ -648,10 +737,7 @@ impl<'a> ComponentNameParser<'a> {
             self.expect_str("/")?;
             self.take_kebab()?;
 
-            if self
-                .features
-                .contains(WasmFeatures::COMPONENT_MODEL_NESTED_NAMES)
-            {
+            if self.features.component_model_nested_names() {
                 while self.next.starts_with('/') {
                     self.expect_str("/")?;
                     self.take_kebab()?;

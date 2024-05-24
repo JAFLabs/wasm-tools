@@ -83,11 +83,13 @@ impl CodeSection {
     /// into a new code section encoder:
     ///
     /// ```
+    /// # use wasmparser::{BinaryReader, WasmFeatures, CodeSectionReader};
     /// //                  id, size, # entries, entry
     /// let code_section = [10, 6,    1,         4, 0, 65, 0, 11];
     ///
     /// // Parse the code section.
-    /// let reader = wasmparser::CodeSectionReader::new(&code_section, 0).unwrap();
+    /// let reader = BinaryReader::new(&code_section, 0, WasmFeatures::all());
+    /// let reader = CodeSectionReader::new(reader).unwrap();
     /// let body = reader.into_iter().next().unwrap().unwrap();
     /// let body_range = body.range();
     ///
@@ -1015,6 +1017,34 @@ pub enum Instruction<'a> {
         global_index: u32,
     },
     GlobalAtomicSet {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwAdd {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwSub {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwAnd {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwOr {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwXor {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwXchg {
+        ordering: Ordering,
+        global_index: u32,
+    },
+    GlobalAtomicRmwCmpxchg {
         ordering: Ordering,
         global_index: u32,
     },
@@ -3178,6 +3208,69 @@ impl Encode for Instruction<'_> {
             } => {
                 sink.push(0xFE);
                 sink.push(0x50);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwAdd {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x51);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwSub {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x52);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwAnd {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x53);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwOr {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x54);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwXor {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x55);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwXchg {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x56);
+                ordering.encode(sink);
+                global_index.encode(sink);
+            }
+            Instruction::GlobalAtomicRmwCmpxchg {
+                ordering,
+                global_index,
+            } => {
+                sink.push(0xFE);
+                sink.push(0x57);
                 ordering.encode(sink);
                 global_index.encode(sink);
             }

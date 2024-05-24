@@ -53,7 +53,7 @@ impl<'a> Subsection<'a> for ComponentName<'a> {
                 }
                 ComponentName::Component {
                     name,
-                    name_range: offset..offset + reader.position,
+                    name_range: offset..reader.original_position(),
                 }
             }
             1 => {
@@ -87,10 +87,7 @@ impl<'a> Subsection<'a> for ComponentName<'a> {
                         });
                     }
                 };
-                ctor(NameMap::new(
-                    reader.remaining_buffer(),
-                    reader.original_position(),
-                )?)
+                ctor(NameMap::new(reader.shrink())?)
             }
             ty => ComponentName::Unknown {
                 ty,

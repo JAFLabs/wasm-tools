@@ -21,6 +21,7 @@ use crate::prelude::*;
 #[cfg(feature = "validate")]
 use crate::types::CoreTypeId;
 use crate::{BinaryReader, BinaryReaderError, FromReader, Result, SectionLimited};
+use core::cmp::Ordering;
 use core::fmt::{self, Debug};
 use core::hash::{Hash, Hasher};
 
@@ -58,7 +59,7 @@ pub(crate) use self::matches::{Matches, WithRecGroup};
 // * `01`: The `index` is an index into the containing type's recursion group.
 //
 // * `10`: The `index` is a `CoreTypeId`.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PackedIndex(u32);
 
 // Assert that we can fit indices up to `MAX_WASM_TYPES` inside `RefType`.
@@ -428,8 +429,22 @@ impl PartialEq for RecGroup {
 
 impl Eq for RecGroup {}
 
+impl Ord for RecGroup {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_tys = self.types();
+        let other_tys = other.types();
+        self_tys.cmp(other_tys)
+    }
+}
+
+impl PartialOrd for RecGroup {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Represents a subtype of possible other types in a WebAssembly module.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SubType {
     /// Is the subtype final.
     pub is_final: bool,
@@ -511,7 +526,7 @@ impl SubType {
 }
 
 /// Represents a composite type in a WebAssembly module.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CompositeType {
     /// The type is for a function.
     Func(FuncType),
@@ -558,7 +573,7 @@ impl CompositeType {
 }
 
 /// Represents a type of a function in a WebAssembly module.
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FuncType {
     /// The combined parameters and result types.
     params_results: Box<[ValType]>,
@@ -657,11 +672,11 @@ impl FuncType {
 }
 
 /// Represents a type of an array in a WebAssembly module.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ArrayType(pub FieldType);
 
 /// Represents a field type of an array or a struct.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FieldType {
     /// Array element type.
     pub element_type: StorageType,
@@ -684,7 +699,7 @@ impl FieldType {
 }
 
 /// Represents storage types introduced in the GC spec for array and struct fields.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StorageType {
     /// The storage type is i8.
     I8,
@@ -725,14 +740,14 @@ impl StorageType {
 }
 
 /// Represents a type of a struct in a WebAssembly module.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct StructType {
     /// Struct fields.
     pub fields: Box<[FieldType]>,
 }
 
 /// Represents the types of values in a WebAssembly module.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValType {
     /// The value type is i32.
     I32,
@@ -883,7 +898,7 @@ impl ValType {
 //
 //   0000 = none
 //   ```
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefType([u8; 3]);
 
 impl fmt::Debug for RefType {
@@ -1368,11 +1383,11 @@ impl<'a> FromReader<'a> for StorageType {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         match reader.peek()? {
             0x78 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(StorageType::I8)
             }
             0x77 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(StorageType::I16)
             }
             _ => Ok(StorageType::Val(reader.read()?)),
@@ -1384,23 +1399,23 @@ impl<'a> FromReader<'a> for ValType {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         match reader.peek()? {
             0x7F => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(ValType::I32)
             }
             0x7E => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(ValType::I64)
             }
             0x7D => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(ValType::F32)
             }
             0x7C => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(ValType::F64)
             }
             0x7B => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(ValType::V128)
             }
             0x70 | 0x6F | 0x64 | 0x63 | 0x6E | 0x71 | 0x72 | 0x73 | 0x74 | 0x6D | 0x6B | 0x6A
@@ -1440,51 +1455,51 @@ impl<'a> FromReader<'a> for HeapType {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         match reader.peek()? {
             0x70 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Func)
             }
             0x6F => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Extern)
             }
             0x6E => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Any)
             }
             0x71 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::None)
             }
             0x72 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::NoExtern)
             }
             0x73 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::NoFunc)
             }
             0x6D => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Eq)
             }
             0x6B => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Struct)
             }
             0x6A => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Array)
             }
             0x6C => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::I31)
             }
             0x69 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::Exn)
             }
             0x74 => {
-                reader.position += 1;
+                reader.read_u8()?;
                 Ok(HeapType::NoExn)
             }
             _ => {

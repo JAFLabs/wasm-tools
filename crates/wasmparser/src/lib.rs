@@ -50,7 +50,7 @@ mod prelude {
     pub use alloc::vec::Vec;
 
     #[cfg(feature = "validate")]
-    pub use crate::map::{HashMap, HashSet, IndexMap, IndexSet};
+    pub use crate::collections::{IndexMap, IndexSet, Map, Set};
 }
 
 /// A helper macro to conveniently iterate over all opcodes recognized by this
@@ -498,6 +498,13 @@ macro_rules! for_each_operator {
             // https://github.com/WebAssembly/shared-everything-threads
             @shared_everything_threads GlobalAtomicGet { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_get
             @shared_everything_threads GlobalAtomicSet { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_set
+            @shared_everything_threads GlobalAtomicRmwAdd { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_add
+            @shared_everything_threads GlobalAtomicRmwSub { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_sub
+            @shared_everything_threads GlobalAtomicRmwAnd { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_and
+            @shared_everything_threads GlobalAtomicRmwOr { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_or
+            @shared_everything_threads GlobalAtomicRmwXor { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_xor
+            @shared_everything_threads GlobalAtomicRmwXchg { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_xchg
+            @shared_everything_threads GlobalAtomicRmwCmpxchg { ordering: $crate::Ordering, global_index: u32 } => visit_global_atomic_rmw_cmpxchg
 
             // 0xFD operators
             // 128-bit SIMD
@@ -784,10 +791,12 @@ macro_rules! bail {
 }
 
 pub use crate::binary_reader::{BinaryReader, BinaryReaderError, Result};
+pub use crate::features::*;
 pub use crate::parser::*;
 pub use crate::readers::*;
 
 mod binary_reader;
+mod features;
 mod limits;
 mod parser;
 mod readers;
@@ -802,4 +811,4 @@ pub use crate::resources::*;
 pub use crate::validator::*;
 
 #[cfg(feature = "validate")]
-pub mod map;
+pub mod collections;

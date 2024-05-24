@@ -104,9 +104,10 @@ impl<'a> FromReader<'a> for ModuleTypeDeclaration<'a> {
 ///
 /// # Examples
 /// ```
-/// use wasmparser::CoreTypeSectionReader;
+/// use wasmparser::{CoreTypeSectionReader, BinaryReader, WasmFeatures};
 /// # let data: &[u8] = &[0x01, 0x60, 0x00, 0x00];
-/// let mut reader = CoreTypeSectionReader::new(data, 0).unwrap();
+/// let reader = BinaryReader::new(data, 0, WasmFeatures::all());
+/// let mut reader = CoreTypeSectionReader::new(reader).unwrap();
 /// for ty in reader {
 ///     println!("Type {:?}", ty.expect("type"));
 /// }
@@ -125,7 +126,7 @@ pub enum ComponentValType {
 impl<'a> FromReader<'a> for ComponentValType {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         if let Some(ty) = PrimitiveValType::from_byte(reader.peek()?) {
-            reader.position += 1;
+            reader.read_u8()?;
             return Ok(ComponentValType::Primitive(ty));
         }
 
@@ -319,7 +320,7 @@ impl<'a> FromReader<'a> for ComponentTypeDeclaration<'a> {
         // variant of imports; check for imports here or delegate to
         // `InstanceTypeDeclaration` with the appropriate conversions.
         if reader.peek()? == 0x03 {
-            reader.position += 1;
+            reader.read_u8()?;
             return Ok(ComponentTypeDeclaration::Import(reader.read()?));
         }
 
@@ -541,9 +542,10 @@ impl<'a> ComponentDefinedType<'a> {
 /// # Examples
 ///
 /// ```
-/// use wasmparser::ComponentTypeSectionReader;
+/// use wasmparser::{ComponentTypeSectionReader, BinaryReader, WasmFeatures};
 /// let data: &[u8] = &[0x01, 0x40, 0x01, 0x03, b'f', b'o', b'o', 0x73, 0x00, 0x73];
-/// let mut reader = ComponentTypeSectionReader::new(data, 0).unwrap();
+/// let reader = BinaryReader::new(data, 0, WasmFeatures::all());
+/// let mut reader = ComponentTypeSectionReader::new(reader).unwrap();
 /// for ty in reader {
 ///     println!("Type {:?}", ty.expect("type"));
 /// }

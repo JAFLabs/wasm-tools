@@ -11,6 +11,7 @@ A simple event-driven library for parsing WebAssembly binary files.
 """
 edition.workspace = true
 exclude = ["benches/*.wasm"]
+rust-version.workspace = true
 
 [lints]
 workspace = true
@@ -21,6 +22,7 @@ indexmap = { workspace = true, optional = true }
 semver = { workspace = true, optional = true }
 hashbrown = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -38,13 +40,19 @@ name = "benchmark"
 harness = false
 
 [features]
-default = ['std', 'validate']
+default = ['std', 'validate', 'serde']
 
 # A feature which enables implementations of `std::error::Error` as appropriate
 # along with other convenience APIs. This additionally uses the standard
 # library's source of randomness for seeding hash maps.
 std = ['indexmap/std']
 
+# Tells the wasmparser crate to avoid using hash based maps and sets.
+#
+# Some embedded environments cannot provide a random source which is required
+# to properly initialize hashmap based data structures for resilience against
+# malious actors that control their inputs.
+no-hash-maps = []
 # A feature that enables validating WebAssembly files. This is enabled by
 # default but not required if you're only parsing a file, for example, as
 # opposed to validating all of its contents.
@@ -54,3 +62,7 @@ validate = [
   'dep:hashbrown',
   'dep:ahash',
 ]
+
+# Enable Serialize/Deserialize implementations for types in
+# `wasmparser::collections`
+serde = ['dep:serde', 'indexmap/serde', 'hashbrown/serde']
